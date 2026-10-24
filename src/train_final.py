@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
 from src.conformal import ALPHA, conformal_threshold, prediction_sets
+from src.monitor import build_reference
 from src.train import FEATURES, lgbm, top_k_gain
 
 
@@ -67,9 +67,13 @@ if __name__ == "__main__":
 
     out = Path("models") / version
     out.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"xl": xl, "arms": arms, "features": FEATURES,
-                 "version": version}, out / "model.joblib")
-    (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
-
-    print("saved to", out)
-    print(json.dumps(metrics, indent=2))
+    joblib.dump(
+        {
+            "xl": xl,
+            "arms": arms,
+            "features": FEATURES,
+            "version": version,
+            "reference": build_reference(train, FEATURES),
+        },
+        out / "model.joblib",
+    )

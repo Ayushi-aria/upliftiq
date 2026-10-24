@@ -10,6 +10,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from src.conformal import prediction_sets
+from src.monitor import ece, psi, psi_status
 from src.train import FEATURES
 
 MODELS_DIR = Path("models")
@@ -120,3 +121,39 @@ def optimize(req: OptimizeRequest):
         "targets": [{"user_id": int(r.user_id), "uplift": round(float(r.uplift), 4)}
                     for r in chosen.itertuples()],
     }
+class MonitorRecord(ScoreRequest):
+    T: int | None = Field(default=None, ge=0, le=1)   # optional: treatment
+    Y: int | None = Field(default=None, ge=0, le=1)   # optional: outcome
+
+
+class MonitorRequest(BaseModel):
+    records: list[MonitorRecord] = Field(min_length=50, max_length=100_000)
+
+
+@app.post("/monitor", dependencies=[Depends(check_key)])
+def monitor(req: MonitorRequest):
+    ref = MODEL.get("reference")
+    if ref is None:
+        raise HTTPException(status_code=409,
+                            detail="Model has no reference data; retrain it")
+    df = pd.DataFrame([r.model_dump() for r in req.records])
+
+    drift = {}
+    for f in FEATURES:
+        v = psi(df[f].values, ref[f]["edges"], ref[f]["expected"])
+        drift[f] = {"psi": round(v, 4), "status": psi_status(v)}
+
+    calibration = {}
+    labelled = df.dropna(subset=["T", "Y"])
+    for t in (0, 1):
+        d = labelled[labelled["T"] == t]
+        if len(d) >= 50:
+            a = MODEL["arms"][t]
+            p = a["iso"].predict(a["clf"].predict_proba(d[FEATURES])[:, 1])
+            calibration[f"ece_T{t}"] = round(ece(d["Y"].values, p), 4)
+
+    alert = (any(v["status"] == "alert" for v in drift.values())
+             or any(v > 0.05 for v in calibration.values()))
+    return {"model_version": VERSION, "n_records": len(df),
+            "feature_drift": drift, "calibration": calibration,
+            "retrain_recommended": alert}

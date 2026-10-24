@@ -31,8 +31,12 @@ the intervention backfires for them.
 | `src/calibrate.py` | Per-arm isotonic calibration, ECE before and after |
 | `src/conformal.py` | Split-conformal outcome sets with 90% target coverage |
 | `src/train_final.py` | Trains the final pipeline and saves a versioned artifact in `models/<version>/` |
-| `app/main.py` | FastAPI service: `/score`, `/optimize`, `/models`, `/health` |
+| `src/monitor.py` | PSI feature drift and ECE calibration drift |
+| `src/make_plots.py` | Generates the plots and the top-20% business metric used in this README |
+| `src/demo_drift.py` | Shifts one feature on purpose to show the drift monitor reacting |
+| `app/main.py` | FastAPI service: `/score`, `/optimize`, `/monitor`, `/models`, `/health` |
 | `tests/` | Unit, API, and property-based (Hypothesis) tests |
+| `locustfile.py` | Load test for the API |
 | `.github/workflows/ci.yml` | Lint, train and test on every push |
 
 ## Results (simulated data, held-out test set)
@@ -55,6 +59,9 @@ All endpoints except `/health` need the header `X-API-Key`.
   conformal outcome sets, and a `confident` flag.
 - `POST /optimize` takes a budget and a cost per user, and returns the target list
   with expected benefit. Users with non-positive uplift are never targeted.
+- `POST /monitor` takes recent records and returns per-feature PSI with a status
+  (ok, warning, alert), ECE per arm when outcomes (`T`, `Y`) are supplied, and a
+  `retrain_recommended` flag.
 - `GET /models` lists model versions and metrics.
 
 Run locally:
@@ -68,6 +75,44 @@ uvicorn app.main:app --reload
 
 Docs open at `http://127.0.0.1:8000/docs`.
 
+## Drift monitoring
+
+The training-time distribution of every feature (10 quantile bins) is stored inside
+the model artifact, so monitoring always compares against the data the model was
+trained on. PSI thresholds: below 0.1 ok, 0.1 to 0.25 warning, above 0.25 alert.
+
+Demo (`python -m src.demo_drift`): 5,000 fresh simulated users, then the same users
+with `activity` shifted by +1.5.
+
+| Feature | PSI, no drift | PSI, shifted |
+|---|---|---|
+| tenure | 0.0011 | 0.0011 |
+| activity | 0.0019 | **2.0571** |
+| risk_score | 0.0025 | 0.0025 |
+| age | 0.0024 | 0.0024 |
+| balance | 0.0027 | 0.0027 |
+
+Only the shifted feature raises an alert, and unshifted data gives no false alarm.
+
+## Load test (local, single worker)
+
+Locust, 20 concurrent users, 60 seconds, server and load generator on the same
+laptop. Not a production benchmark.
+
+| Endpoint | Median | p95 |
+|---|---|---|
+| `POST /score` (uncached) | 69 ms | 210 ms |
+| `POST /score` (cached) | 32 ms | 160 ms |
+| `POST /optimize` (200 users per call) | 62 ms | 190 ms |
+
+~2,970 requests, 0 failures, ~50 requests/s sustained. Throughput is set by the
+test's think time (0.1 to 0.5 s per user), so it is not the server's maximum.
+The cache saves model inference but not HTTP and validation overhead, so its gain
+is modest.
+
+Reproduce: `uvicorn app.main:app`, then
+`locust -f locustfile.py --headless -u 20 -r 5 -t 60s --host http://127.0.0.1:8000`.
+
 ## Engineering notes
 
 - **Versioning and rollback:** each training run writes `models/<version>/`.
@@ -77,16 +122,19 @@ Docs open at `http://127.0.0.1:8000/docs`.
 - **Property-based tests:** probabilities stay in [0, 1], the budget is never
   exceeded, and negative-uplift users are never targeted. A Hypothesis test caught
   a real bug: `budget_used` was rounded up and could exceed the budget.
-- **Test coverage:** 46% overall. The API and simulator are well covered; the
-  training scripts run end to end in CI but are not unit-tested.
+- **Test coverage:** 37% overall (API layer `app/main.py` 83%). Training, plotting
+  and demo scripts are not unit-tested; training runs end to end in CI.
 
 ## Simplifications and known limitations
 
-- DuckDB, Postgres, Redis, Celery, drift monitoring, and AWS deployment are not
+- DuckDB, Postgres, Redis, Celery, Docker, and AWS deployment are not
   implemented. The cache is an in-memory dict (single process, no expiry).
+- Drift monitoring is on-demand through `/monitor`. There is no scheduled job,
+  alerting, or automatic retraining, and the `/monitor` endpoint itself has no
+  API-level test (the PSI functions do).
 - Conformal sets are for the binary outcome, not for the individual treatment
   effect, which is never observed.
 - `uplift` (X-learner) and `p_treated - p_control` (two calibrated models) can
   differ; ranking uses the X-learner, probabilities come from the calibrated models.
-- Latency and throughput have not been measured yet.
+- Load test numbers come from a laptop running server and load generator together.
 - Results are from a simulator and may not transfer to real data.
