@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 import joblib
@@ -77,3 +78,7 @@ if __name__ == "__main__":
         },
         out / "model.joblib",
     )
+    (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
+
+    print("saved to", out)
+    print(json.dumps(metrics, indent=2))
