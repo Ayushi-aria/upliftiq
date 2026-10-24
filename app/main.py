@@ -113,7 +113,7 @@ def optimize(req: OptimizeRequest):
         "model_version": VERSION,
         "n_users": len(df),
         "n_targeted": n,
-        "budget_used": round(n * req.cost_per_user, 2),
+        "budget_used": n * req.cost_per_user,
         "expected_benefit": round(expected, 3),
         "benefit_if_random_targeting": round(random_expected, 3),
         "pct_of_max_achievable": round(100 * expected / best_possible, 1) if best_possible > 0 else 0.0,
